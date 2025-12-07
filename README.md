@@ -1,24 +1,27 @@
 # BrewUp
 
-**Production-grade Homebrew maintenance for macOS 26+**
+**Production-grade system software maintenance for macOS**
 
-[![zsh](https://img.shields.io/badge/shell-zsh%205.8+-blue.svg)](https://www.zsh.org/)
-[![Homebrew](https://img.shields.io/badge/homebrew-5.0+-orange.svg)](https://brew.sh/)
-[![macOS](https://img.shields.io/badge/macOS-13+-lightgrey.svg)](https://www.apple.com/macos/)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+A flexible, performant, secure, robust, and efficient zsh function for safely updating your macOS system software via Homebrew and related package managers.
 
-A flexible, performant, secure, robust, and efficient zsh function for safely updating your macOS system software via Homebrew.
+---
 
 ## Features
 
-- **🔒 Safe by Default** — Dry-run mode, confirmation prompts, pre-upgrade snapshots
-- **⚡ Performance Optimized** — Single-pass JSON inventory, batch upgrades, parallel downloads
-- **🛡️ Robust Execution** — Concurrent execution lock, bounded retry with backoff, graceful error handling
-- **🎛️ Highly Configurable** — CLI flags, environment variables, config file (in that precedence order)
-- **📊 Comprehensive Logging** — Human-readable logs + structured JSONL events
-- **🎨 Beautiful Output** — Multiple themes (emoji, classic, minimal, none)
-- **🔧 macOS 26+ Ready** — Quarantine/Gatekeeper pre-flight checks, App Management awareness
-- **🤖 CI/Automation Friendly** — `--yes`, `--json`, `--quiet` flags for scripted use
+| Category | Capabilities |
+|----------|-------------|
+| **Safety** | Dry-run mode, confirmation prompts, pre-upgrade snapshots, concurrent execution lock |
+| **Performance** | Single-pass JSON inventory, batch upgrades, bounded retry with backoff |
+| **Scope** | Homebrew formulae/casks, npm globals, pip/pipx, gem, Mac App Store[^1] |
+| **Configuration** | CLI flags > environment variables > config file (in precedence order) |
+| **Logging** | Human-readable logs + structured JSONL events, configurable retention |
+| **Output** | Multiple themes (emoji, classic, minimal, none), quiet/verbose modes |
+| **macOS** | Quarantine/Gatekeeper pre-flight checks, App Management awareness |
+| **Automation** | `--yes`, `--json`, `--quiet` flags for CI/scripted use |
+
+[^1]: Requires `mas` CLI for App Store updates: `brew install mas`
+
+---
 
 ## Quick Start
 
@@ -31,53 +34,63 @@ brewup
 
 # Fast batch upgrade without prompts
 brewup --batch -y
+
+# Include all package managers
+brewup --all
 ```
+
+---
 
 ## Installation
 
-### 1. Create the functions directory
+<details>
+<summary><strong>Step 1: Create the functions directory</strong></summary>
 
 ```bash
 mkdir -p ~/.zsh/functions
 ```
 
-### 2. Download brewup
+</details>
 
+<details>
+<summary><strong>Step 2: Download brewup</strong></summary>
+
+**Option A: Direct download**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/your-username/brewup/main/brewup \
+curl -fsSL https://raw.githubusercontent.com/wyattowalsh/brewup/main/brewup \
   -o ~/.zsh/functions/brewup
 ```
 
-Or clone the repository:
-
+**Option B: Clone repository**
 ```bash
-git clone https://github.com/your-username/brewup.git
+git clone https://github.com/wyattowalsh/brewup.git
 cp brewup/brewup ~/.zsh/functions/
 ```
 
-### 3. Add to your `.zshrc`
+</details>
+
+<details>
+<summary><strong>Step 3: Add to your .zshrc</strong></summary>
 
 ```zsh
-# ──────────────────────────────────────────────────────────────────────────────
-# BrewUp — Safe Homebrew maintenance
-# ──────────────────────────────────────────────────────────────────────────────
 # Ensure functions directory is in fpath
 fpath=(~/.zsh/functions $fpath)
 
 # Autoload the brewup function
 if [[ -f ~/.zsh/functions/brewup ]]; then
     autoload -Uz brewup
-    
-    # Optional: short alias
+
+    # Optional aliases
     alias bu='brewup'
-    
-    # Optional: quick commands
     alias brewplan='brewup plan'
     alias brewfast='brewup --batch -y'
 fi
 ```
 
-### 4. Reload your shell
+</details>
+
+<details>
+<summary><strong>Step 4: Reload shell</strong></summary>
 
 ```bash
 source ~/.zshrc
@@ -85,14 +98,18 @@ source ~/.zshrc
 exec zsh
 ```
 
-### 5. Verify installation
+</details>
+
+<details>
+<summary><strong>Step 5: Verify installation</strong></summary>
 
 ```bash
-brewup --version
-# brewup 2.0.0
-
 brewup --help
 ```
+
+</details>
+
+---
 
 ## Usage
 
@@ -101,18 +118,19 @@ brewup --help
 | Subcommand | Description |
 |------------|-------------|
 | `plan` | Show what would be upgraded (dry-run) |
-| `run` | Full maintenance: update → upgrade → cleanup → summary (**default**) |
+| `run` | Full maintenance: update → upgrade → cleanup → summary **(default)** |
 | `update` | Only run `brew update` |
 | `upgrade` | Only upgrade packages (skip brew update) |
 | `doctor` | Run `brew doctor` |
 | `summary` | Show path to last log + recent entries |
 | `report` | Generate formatted report (md/text/json) |
 | `config` | Show current configuration |
-| `version` | Show version |
+| `rollback` | Rollback a package to previous version |
 
 ### Common Workflows
 
-#### Preview Changes (Safe Mode)
+<details>
+<summary><strong>Preview Changes (Safe Mode)</strong></summary>
 
 ```bash
 brewup plan
@@ -120,13 +138,18 @@ brewup plan
 brewup --dry-run
 ```
 
-#### Standard Maintenance Run
+Shows exactly what would be upgraded without making changes.
+
+</details>
+
+<details>
+<summary><strong>Standard Maintenance Run</strong></summary>
 
 ```bash
 brewup
 ```
 
-This will:
+Performs the complete maintenance flow:
 1. Collect inventory of outdated packages
 2. Display upgrade plan
 3. Prompt for confirmation
@@ -135,7 +158,10 @@ This will:
 6. Run cleanup
 7. Display summary
 
-#### Fast Unattended Upgrade
+</details>
+
+<details>
+<summary><strong>Fast Unattended Upgrade</strong></summary>
 
 ```bash
 brewup --batch -y
@@ -143,19 +169,21 @@ brewup --batch -y
 
 Uses Homebrew's batch upgrade mode (single command) and skips confirmation.
 
-#### Formulae Only
+</details>
+
+<details>
+<summary><strong>Include All Package Managers</strong></summary>
 
 ```bash
-brewup --formula-only
+brewup --all
 ```
 
-#### Casks Only (Skip Auto-Updating Apps)
+Updates Homebrew packages plus npm globals, pipx, gems, and App Store apps.
 
-```bash
-brewup --cask-only --skip-auto-update
-```
+</details>
 
-#### Interactive Selection
+<details>
+<summary><strong>Interactive Selection</strong></summary>
 
 Requires [fzf](https://github.com/junegunn/fzf):
 
@@ -165,97 +193,132 @@ brewup -i
 brewup --interactive
 ```
 
-#### Upgrade Pinned Formulae
+Select which packages to upgrade using fuzzy finder.
+
+</details>
+
+<details>
+<summary><strong>Rollback a Package</strong></summary>
 
 ```bash
-brewup --upgrade-pinned
-# To upgrade and leave unpinned:
-brewup --upgrade-pinned --leave-unpinned
+brewup --rollback=node
 ```
 
-### All Flags
+Interactive prompt to rollback a specific package to a previous version.
 
-```
-Package Selection
-  --formula-only          Only upgrade formulae
-  --cask-only             Only upgrade casks
-  --no-greedy             Don't use --greedy for cask upgrades
-  --skip-auto-update      Skip casks with auto_updates: true
-  --upgrade-pinned        Temporarily unpin → upgrade → re-pin
-  --leave-unpinned        Don't re-pin after upgrading pinned
+</details>
 
-Behavior
-  --no-cleanup            Skip 'brew cleanup' after upgrade
-  --doctor                Run 'brew doctor' at the end
-  --dry-run               Plan only; do not perform upgrades
-  --batch                 Use batch upgrade (single brew call)
-  --interactive, -i       Select packages interactively (requires fzf)
-  --force-update          Force 'brew update' (normally implicit)
-  --no-lock               Skip concurrent execution lock
+### CLI Reference
 
-Output
-  --json                  Emit JSONL event log to stdout
-  --theme=<t>             emoji | classic | minimal | none
-  --report=<fmt>          md | text | json
-  --verbose, -v           Verbose output
-  --quiet, -q             Minimal output
-  --no-color              Disable ANSI colors
+<details>
+<summary><strong>Package Selection Flags</strong></summary>
 
-Logging
-  --log-dir=<path>        Override log directory
-  --log-retention=<days>  Days to keep old logs (default: 30)
+| Flag | Description |
+|------|-------------|
+| `--formula-only` | Only upgrade formulae |
+| `--cask-only` | Only upgrade casks |
+| `--brew-only` | Only Homebrew (skip npm/pip/gem/mas) |
+| `--npm`, `--with-npm` | Include npm global packages |
+| `--pip`, `--with-pip` | Include pip/pipx packages |
+| `--gem`, `--with-gem` | Include gem packages |
+| `--mas`, `--with-mas` | Include Mac App Store apps |
+| `--all`, `-a` | Include all package managers |
 
-Other
-  --yes, -y               Don't prompt for confirmation
-  -h, --help              Show help
-  --version               Show version
-```
+</details>
+
+<details>
+<summary><strong>Homebrew Options</strong></summary>
+
+| Flag | Description |
+|------|-------------|
+| `--no-greedy` | Don't use `--greedy` for cask upgrades |
+| `--skip-auto-update` | Skip casks with `auto_updates: true` |
+| `--upgrade-pinned` | Temporarily unpin → upgrade → re-pin |
+| `--leave-unpinned` | Don't re-pin after upgrading pinned |
+
+</details>
+
+<details>
+<summary><strong>Behavior Flags</strong></summary>
+
+| Flag | Description |
+|------|-------------|
+| `--no-cleanup` | Skip `brew cleanup` after upgrade |
+| `--doctor` | Run `brew doctor` at the end |
+| `--dry-run` | Plan only; do not perform upgrades |
+| `--batch` | Use batch upgrade (single brew call) |
+| `--interactive`, `-i` | Select packages interactively (requires fzf) |
+| `--force-update` | Force `brew update` (normally implicit) |
+| `--no-lock` | Skip concurrent execution lock |
+| `--no-parallel` | Disable parallel operations |
+| `--no-health-check` | Skip pre-flight health checks |
+
+</details>
+
+<details>
+<summary><strong>Output Flags</strong></summary>
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Emit JSONL event log to stdout |
+| `--theme=<t>` | `emoji` \| `classic` \| `minimal` \| `none` |
+| `--report=<fmt>` | `md` \| `text` \| `json` |
+| `--verbose`, `-v` | Verbose output |
+| `--quiet`, `-q` | Minimal output |
+| `--no-color` | Disable ANSI colors |
+
+</details>
+
+<details>
+<summary><strong>Other Flags</strong></summary>
+
+| Flag | Description |
+|------|-------------|
+| `--yes`, `-y` | Don't prompt for confirmation |
+| `--rollback=<pkg>` | Rollback a specific package |
+| `--log-dir=<path>` | Override log directory |
+| `--log-retention=<days>` | Days to keep old logs (default: 30) |
+| `-h`, `--help` | Show help |
+
+</details>
+
+---
 
 ## Configuration
 
 BrewUp loads configuration from three sources (highest precedence first):
 
-1. **CLI flags** — Always override everything
-2. **Environment variables** — Prefix with `BREWUP_`
-3. **Config file** — `~/.config/brewup/config`
+| Priority | Source | Example |
+|----------|--------|---------|
+| 1 | CLI flags | `brewup --theme=minimal` |
+| 2 | Environment variables | `export BREWUP_THEME="minimal"` |
+| 3 | Config file | `~/.config/brewup/config` |
 
 ### Config File
 
 Create `~/.config/brewup/config`:
 
 ```ini
-# BrewUp Configuration
-# All options are optional; shown values are defaults
-
 # Visual theme: emoji | classic | minimal | none
 theme = emoji
 
 # Log retention in days
 log_retention = 30
 
-# Custom log directory (default: ~/Library/Logs/brewup)
-# log_dir = /path/to/logs
-
 # Skip casks that have auto_updates: true
-skip_auto_update = false
+skip_auto_update = true
 
-# Don't use --greedy for cask upgrades
-no_greedy = false
-
-# Use batch upgrade mode (faster, less granular)
+# Use batch upgrade mode
 batch = false
 
-# Always skip confirmation prompts
-# yes = false
+# Include additional package managers
+npm = false
+pip = false
+gem = false
+mas = false
 
-# Run brew doctor after upgrades
-# doctor = false
-
-# Verbose output
-# verbose = false
-
-# Quiet mode (minimal output)
-# quiet = false
+# Or enable all at once
+# all = true
 ```
 
 ### Environment Variables
@@ -263,19 +326,43 @@ batch = false
 ```bash
 # In ~/.zshrc or ~/.zshenv
 export BREWUP_THEME="minimal"
-export BREWUP_LOG_RETENTION="14"
 export BREWUP_SKIP_AUTO_UPDATE="1"
-export BREWUP_BATCH="1"
-export BREWUP_YES="1"  # Skip prompts
-export BREWUP_QUIET="1"
+export BREWUP_ALL="1"      # Include all package managers
+export BREWUP_YES="1"      # Skip prompts
+export BREWUP_QUIET="1"    # Minimal output
 ```
+
+<details>
+<summary><strong>All Environment Variables</strong></summary>
+
+| Variable | Description |
+|----------|-------------|
+| `BREWUP_THEME` | Output theme |
+| `BREWUP_LOG_DIR` | Custom log directory |
+| `BREWUP_LOG_RETENTION` | Days to keep logs |
+| `BREWUP_NO_GREEDY` | Disable greedy cask upgrades |
+| `BREWUP_SKIP_AUTO_UPDATE` | Skip auto-updating casks |
+| `BREWUP_BATCH` | Use batch mode |
+| `BREWUP_VERBOSE` | Verbose output |
+| `BREWUP_QUIET` | Minimal output |
+| `BREWUP_NO_COLOR` | Disable colors |
+| `BREWUP_YES` | Skip confirmations |
+| `BREWUP_NPM` | Include npm globals |
+| `BREWUP_PIP` | Include pip/pipx |
+| `BREWUP_GEM` | Include gems |
+| `BREWUP_MAS` | Include App Store |
+| `BREWUP_ALL` | Include all managers |
+
+</details>
+
+---
 
 ## Logging
 
 ### Log Locations
 
 | Platform | Default Location |
-|----------|-----------------|
+|----------|------------------|
 | macOS | `~/Library/Logs/brewup/` |
 | XDG-compliant | `$XDG_STATE_HOME/brewup/` |
 | Fallback | `~/.local/state/brewup/` |
@@ -291,15 +378,18 @@ Each run creates timestamped files:
 └── 2025-12-07_14-30-00.snapshot # Pre-upgrade package versions
 ```
 
-### JSONL Event Format
+<details>
+<summary><strong>JSONL Event Format</strong></summary>
 
 ```json
-{"ts":"2025-12-07T14:30:00-0500","event":"session_start","version":"2.0.0"}
+{"ts":"2025-12-07T14:30:00-0500","event":"session_start"}
 {"ts":"2025-12-07T14:30:05-0500","type":"formula","name":"node","action":"upgraded"}
 {"ts":"2025-12-07T14:30:10-0500","type":"cask","name":"firefox","action":"upgraded"}
 {"ts":"2025-12-07T14:30:15-0500","type":"formula","name":"python@3.12","action":"skip","reason":"pinned"}
 {"ts":"2025-12-07T14:30:20-0500","event":"session_end","upgraded":2,"failed":0}
 ```
+
+</details>
 
 ### Viewing Logs
 
@@ -317,102 +407,55 @@ brewup report --report=json | jq .
 tail -f ~/Library/Logs/brewup/*.log
 ```
 
-### Log Retention
-
-Old logs are automatically pruned based on `log_retention` setting (default: 30 days).
+---
 
 ## Pre-flight Checks
 
-BrewUp performs several safety checks before upgrading:
+BrewUp performs safety checks before upgrading:
 
-### Concurrent Execution Lock
+| Check | Description |
+|-------|-------------|
+| **Concurrent Lock** | Prevents multiple brewup instances from running simultaneously |
+| **Disk Space** | Warns if available space is below 1GB |
+| **Network** | Verifies connectivity to github.com |
+| **Permissions** | Checks if Homebrew Cellar is writable |
+| **Quarantine** | macOS 13+: Notes App Management permission requirements |
 
-Prevents multiple brewup instances from running simultaneously, avoiding race conditions.
+Bypass health checks with `--no-health-check` (not recommended).
 
-```bash
-# Bypass if needed (not recommended)
-brewup --no-lock
-```
-
-### Quarantine Support (macOS 26+)
-
-Checks if your terminal has the required permissions for cask upgrades:
-
-```
-⚠️  Quarantine support may be limited.
-    If cask upgrades fail, grant 'App Management' permission to Terminal in:
-    System Settings → Privacy & Security → App Management
-```
-
-### Disk Space
-
-Warns if available disk space is below 2GB.
+---
 
 ## Pre-upgrade Snapshots
 
 Before any upgrades, brewup saves the current state:
 
 ```bash
-# View snapshot
 cat ~/Library/Logs/brewup/2025-12-07_14-30-00.snapshot
 ```
 
-Example snapshot:
-
-```
-# BrewUp Pre-Upgrade Snapshot
-# Generated: 2025-12-07T14:30:00-0500
-
-## Installed Formulae
-node 21.4.0
-python@3.12 3.12.1
-...
-
-## Installed Casks
-firefox 121.0
-visual-studio-code 1.85.0
-...
-```
-
-Use this to identify what changed or to manually rollback:
+Use this to identify changes or manually rollback:
 
 ```bash
 brew install node@21.4.0
 ```
 
+---
+
 ## Themes
 
-### Emoji (default)
+| Theme | Example Output |
+|-------|----------------|
+| **emoji** (default) | `[ok] node upgraded` |
+| **classic** | `[+] node upgraded` |
+| **minimal** | `[OK] node upgraded` |
+| **none** | `node upgraded` |
 
-```
-✅ node upgraded
-⚠️  python@3.12 pinned → skipping
-❌ rust upgrade failed
-```
-
-### Classic
-
-```
-✔ node upgraded
-⚠ python@3.12 pinned → skipping
-✖ rust upgrade failed
-```
-
-### Minimal
-
-```
-[OK] node upgraded
-[!] python@3.12 pinned → skipping
-[FAIL] rust upgrade failed
-```
-
-### None
-
-No icons, just text.
+---
 
 ## CI/CD Integration
 
-### GitHub Actions
+<details>
+<summary><strong>GitHub Actions</strong></summary>
 
 ```yaml
 name: Update Homebrew Packages
@@ -429,7 +472,7 @@ jobs:
       - name: Install brewup
         run: |
           mkdir -p ~/.zsh/functions
-          curl -fsSL https://raw.githubusercontent.com/your-username/brewup/main/brewup \
+          curl -fsSL https://raw.githubusercontent.com/wyattowalsh/brewup/main/brewup \
             -o ~/.zsh/functions/brewup
 
       - name: Run brewup
@@ -438,16 +481,24 @@ jobs:
           brewup --batch -y --json --quiet
 ```
 
-### Cron Job
+</details>
+
+<details>
+<summary><strong>Cron Job</strong></summary>
 
 ```bash
 # Add to crontab -e
 0 6 * * * /bin/zsh -c 'source ~/.zsh/functions/brewup && brewup --batch -y --quiet' >> ~/Library/Logs/brewup-cron.log 2>&1
 ```
 
+</details>
+
+---
+
 ## Troubleshooting
 
-### "Another brewup instance is running"
+<details>
+<summary><strong>"Another brewup instance is running"</strong></summary>
 
 ```bash
 # Check for stale lock
@@ -460,13 +511,19 @@ rm /tmp/brewup.lock
 brewup --no-lock
 ```
 
-### Cask Upgrade Fails with Quarantine Error
+</details>
+
+<details>
+<summary><strong>Cask upgrade fails with quarantine error</strong></summary>
 
 1. Open **System Settings → Privacy & Security → App Management**
 2. Add your terminal app (Terminal, iTerm2, etc.)
 3. Retry: `brewup --cask-only`
 
-### "jq not found" Warning
+</details>
+
+<details>
+<summary><strong>"jq not found" warning</strong></summary>
 
 Install jq for better inventory performance:
 
@@ -476,7 +533,10 @@ brew install jq
 
 BrewUp works without jq but uses less efficient text parsing.
 
-### Interactive Mode Not Working
+</details>
+
+<details>
+<summary><strong>Interactive mode not working</strong></summary>
 
 Install fzf:
 
@@ -484,49 +544,52 @@ Install fzf:
 brew install fzf
 ```
 
-## Dependencies
+</details>
 
-### Required
+---
 
-- **zsh 5.8+** — Uses `zsh/datetime`, `zsh/system` modules
-- **Homebrew 5.0+** — Recommended for full compatibility
-- **macOS 13+** — Optimized for macOS 26 (Tahoe)
+## Requirements
 
-### Optional
+| Requirement | Notes |
+|-------------|-------|
+| **zsh 5.8+** | Uses `zsh/datetime`, `zsh/system` modules |
+| **Homebrew 4.0+** | Recommended for full compatibility |
+| **macOS 13+** | Optimized for macOS 26 (Tahoe) |
 
-- **jq** — Faster JSON-based inventory collection
-- **fzf** — Interactive package selection mode
+### Optional Dependencies
 
-## Comparison with Alternatives
+| Package | Purpose |
+|---------|---------|
+| `jq` | Faster JSON-based inventory collection |
+| `fzf` | Interactive package selection mode |
+| `mas` | Mac App Store updates |
+| `pipx` | Python package management (preferred over pip) |
+
+---
+
+## Comparison
 
 | Feature | brewup | `brew upgrade` | brew-cask-upgrade |
 |---------|--------|----------------|-------------------|
-| Dry-run preview | ✅ | ❌ | ✅ |
-| Batch mode | ✅ | ✅ | ❌ |
-| Skip auto-update casks | ✅ | ❌ | ✅ |
-| Pinned formula handling | ✅ | ❌ | N/A |
-| Interactive selection | ✅ | ❌ | ❌ |
-| JSONL logging | ✅ | ❌ | ❌ |
-| Pre-upgrade snapshots | ✅ | ❌ | ❌ |
-| Concurrent lock | ✅ | ❌ | ❌ |
-| Config file | ✅ | ❌ | ❌ |
-| Retry with backoff | ✅ | ❌ | ❌ |
+| Dry-run preview | Yes | No | Yes |
+| Batch mode | Yes | Yes | No |
+| Skip auto-update casks | Yes | No | Yes |
+| Pinned formula handling | Yes | No | N/A |
+| Interactive selection | Yes | No | No |
+| JSONL logging | Yes | No | No |
+| Pre-upgrade snapshots | Yes | No | No |
+| Concurrent lock | Yes | No | No |
+| Config file | Yes | No | No |
+| Retry with backoff | Yes | No | No |
+| npm/pip/gem/mas | Yes | No | No |
 
-## Contributing
+---
 
-Contributions are welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-### Development
+## Development
 
 ```bash
 # Clone
-git clone https://github.com/your-username/brewup.git
+git clone https://github.com/wyattowalsh/brewup.git
 cd brewup
 
 # Test locally
@@ -537,33 +600,17 @@ brewup --help
 brewup --verbose plan
 ```
 
-## Changelog
-
-### v2.0.0
-
-- Complete rewrite with focus on performance and robustness
-- Single-pass JSON inventory collection
-- Concurrent execution lock
-- Pre-upgrade snapshots
-- Skip auto-updating casks
-- Interactive mode with fzf
-- Batch upgrade mode
-- Config file support
-- JSONL structured logging
-- Bounded exponential backoff retry
-- macOS 26 Gatekeeper/quarantine checks
-- Multiple output themes
-
-### v1.0.0
-
-- Initial release
+---
 
 ## License
 
 MIT License — see [LICENSE](LICENSE) for details.
+
+---
 
 ## Acknowledgments
 
 - [Homebrew](https://brew.sh/) — The missing package manager for macOS
 - [brew-cask-upgrade](https://github.com/buo/homebrew-cask-upgrade) — Inspiration for cask handling
 - [fzf](https://github.com/junegunn/fzf) — Fuzzy finder for interactive mode
+- [mas](https://github.com/mas-cli/mas) — Mac App Store CLI

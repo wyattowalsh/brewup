@@ -1,5 +1,5 @@
 # ==============================================================================
-# BrewUp Configuration File
+# BrewUp Configuration
 # ==============================================================================
 # Location: ~/.config/brewup/config
 #
@@ -9,35 +9,54 @@
 #   3. This config file
 #
 # All settings are optional. Uncomment and modify as needed.
+# Boolean values accept: true/false, 1/0
 # ==============================================================================
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # Visual Settings
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 
 # Output theme: emoji | classic | minimal | none
-# - emoji:   Uses emoji icons (✅ ❌ ⚠️)
-# - classic: Uses Unicode symbols (✔ ✖ ⚠)
-# - minimal: Uses text labels ([OK] [FAIL] [!])
+# - emoji:   Uses text labels like [ok] [err] [!]
+# - classic: Uses simple symbols like [+] [x] [!]
+# - minimal: Uses text labels like [OK] [FAIL] [!]
 # - none:    No icons
 theme = emoji
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # Package Selection
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 
 # Skip casks that have auto_updates: true in their definition
 # These apps update themselves (e.g., Chrome, Firefox, VS Code)
-# Recommended: true to avoid version conflicts
 # skip_auto_update = true
 
 # Don't use --greedy flag for cask upgrades
 # Greedy mode upgrades casks even if they report as current
 # no_greedy = false
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
+# Additional Package Managers
+# ------------------------------------------------------------------------------
+
+# Include npm global packages in upgrades
+# npm = true
+
+# Include pip/pipx packages in upgrades (pipx preferred)
+# pip = true
+
+# Include gem packages in upgrades
+# gem = true
+
+# Include Mac App Store apps (requires mas CLI)
+# mas = true
+
+# Or enable all additional package managers at once
+# all = true
+
+# ------------------------------------------------------------------------------
 # Upgrade Behavior
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 
 # Use batch upgrade mode (single brew command for all packages)
 # Faster but less granular error reporting
@@ -50,9 +69,19 @@ theme = emoji
 # Run brew doctor after upgrades
 # doctor = false
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
+# Pre-flight Checks
+# ------------------------------------------------------------------------------
+
+# Run health checks before upgrading (disk space, network, permissions)
+# health_check = true
+
+# Use parallel operations where possible
+# parallel = true
+
+# ------------------------------------------------------------------------------
 # Output & Logging
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 
 # Verbose output (more detailed progress information)
 # verbose = false
