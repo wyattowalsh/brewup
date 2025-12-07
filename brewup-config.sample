@@ -1,0 +1,71 @@
+# ==============================================================================
+# BrewUp Configuration File
+# ==============================================================================
+# Location: ~/.config/brewup/config
+#
+# Configuration precedence (highest first):
+#   1. CLI flags (e.g., --theme=minimal)
+#   2. Environment variables (e.g., BREWUP_THEME=minimal)
+#   3. This config file
+#
+# All settings are optional. Uncomment and modify as needed.
+# ==============================================================================
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Visual Settings
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Output theme: emoji | classic | minimal | none
+# - emoji:   Uses emoji icons (✅ ❌ ⚠️)
+# - classic: Uses Unicode symbols (✔ ✖ ⚠)
+# - minimal: Uses text labels ([OK] [FAIL] [!])
+# - none:    No icons
+theme = emoji
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Package Selection
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Skip casks that have auto_updates: true in their definition
+# These apps update themselves (e.g., Chrome, Firefox, VS Code)
+# Recommended: true to avoid version conflicts
+# skip_auto_update = true
+
+# Don't use --greedy flag for cask upgrades
+# Greedy mode upgrades casks even if they report as current
+# no_greedy = false
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Upgrade Behavior
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Use batch upgrade mode (single brew command for all packages)
+# Faster but less granular error reporting
+# batch = false
+
+# Skip confirmation prompts (equivalent to --yes)
+# Use with caution in interactive sessions
+# yes = false
+
+# Run brew doctor after upgrades
+# doctor = false
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Output & Logging
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Verbose output (more detailed progress information)
+# verbose = false
+
+# Quiet mode (minimal output, only errors and summary)
+# quiet = false
+
+# Log retention in days (logs older than this are auto-deleted)
+log_retention = 30
+
+# Custom log directory
+# Default: ~/Library/Logs/brewup (macOS) or ~/.local/state/brewup (XDG)
+# log_dir = /custom/path/to/logs
+
+# Report format: text | md | json
+# report_fmt = text
