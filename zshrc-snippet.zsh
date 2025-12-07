@@ -1,5 +1,5 @@
 # ==============================================================================
-# BrewUp — Safe Homebrew Maintenance
+# BrewUp — Safe System Software Maintenance
 # ==============================================================================
 # Add this snippet to your ~/.zshrc
 #
@@ -10,6 +10,8 @@
 # Optional dependencies:
 #   - jq: brew install jq      (faster inventory collection)
 #   - fzf: brew install fzf    (interactive mode)
+#   - mas: brew install mas    (Mac App Store updates)
+#   - pipx: brew install pipx  (Python package management)
 # ==============================================================================
 
 # Ensure the functions directory is in fpath (add before compinit if using OMZ)
@@ -22,9 +24,9 @@ fi
 if [[ -f ~/.zsh/functions/brewup ]]; then
     autoload -Uz brewup
 
-    # ──────────────────────────────────────────────────────────────────────────
+    # --------------------------------------------------------------------------
     # Convenience Aliases (optional, uncomment as desired)
-    # ──────────────────────────────────────────────────────────────────────────
+    # --------------------------------------------------------------------------
 
     # Short alias
     alias bu='brewup'
@@ -35,10 +37,11 @@ if [[ -f ~/.zsh/functions/brewup ]]; then
     alias brewsafe='brewup --dry-run'               # Dry-run mode
     alias brewdoc='brewup doctor'                   # Run brew doctor
     alias brewlog='brewup summary'                  # Show recent log
+    alias brewall='brewup --all'                    # Include all package managers
 
-    # ──────────────────────────────────────────────────────────────────────────
+    # --------------------------------------------------------------------------
     # Environment Configuration (optional, uncomment to customize)
-    # ──────────────────────────────────────────────────────────────────────────
+    # --------------------------------------------------------------------------
 
     # Visual theme: emoji | classic | minimal | none
     # export BREWUP_THEME="emoji"
@@ -58,9 +61,28 @@ if [[ -f ~/.zsh/functions/brewup ]]; then
     # Custom log directory
     # export BREWUP_LOG_DIR="$HOME/.local/state/brewup"
 
-    # ──────────────────────────────────────────────────────────────────────────
+    # --------------------------------------------------------------------------
+    # Additional Package Managers (optional)
+    # --------------------------------------------------------------------------
+
+    # Include npm global packages
+    # export BREWUP_NPM="1"
+
+    # Include pip/pipx packages
+    # export BREWUP_PIP="1"
+
+    # Include gem packages
+    # export BREWUP_GEM="1"
+
+    # Include Mac App Store apps (requires mas)
+    # export BREWUP_MAS="1"
+
+    # Include ALL additional package managers
+    # export BREWUP_ALL="1"
+
+    # --------------------------------------------------------------------------
     # Scheduled Maintenance Reminder (optional)
-    # ──────────────────────────────────────────────────────────────────────────
+    # --------------------------------------------------------------------------
     # Uncomment to show a reminder if brewup hasn't run in 7+ days
 
     # __brewup_check_last_run() {
@@ -78,8 +100,8 @@ if [[ -f ~/.zsh/functions/brewup ]]; then
     #     days_ago=$(( (now - last_mtime) / 86400 ))
     #
     #     if (( days_ago >= threshold_days )); then
-    #         print -P "%F{yellow}💡 Homebrew packages haven't been updated in ${days_ago} days.%f"
-    #         print -P "%F{yellow}   Run 'brewup' or 'brewup plan' to check for updates.%f"
+    #         print -P "%F{yellow}Homebrew packages haven't been updated in ${days_ago} days.%f"
+    #         print -P "%F{yellow}Run 'brewup' or 'brewup plan' to check for updates.%f"
     #     fi
     # }
     # __brewup_check_last_run

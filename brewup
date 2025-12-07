@@ -1,48 +1,24 @@
 # ~/.zsh/functions/brewup
 #compdef brewup
 # =============================================================================
-# BrewUp v2.0 — Production-grade Homebrew maintenance for macOS 26+
+# BrewUp — Production-grade system software maintenance for macOS
 # =============================================================================
 # A flexible, performant, secure, robust, and efficient zsh function for
-# safely updating system software via Homebrew.
+# safely updating system software via Homebrew and related package managers.
 #
 # Features
-#   • Subcommands: plan | run | update | upgrade | doctor | summary | report | config | version
+#   • Subcommands: plan | run | update | upgrade | doctor | summary | report | config | rollback
 #   • Smart defaults with full configurability via file, env, and CLI
 #   • Single-pass JSON inventory (efficient, no redundant subprocess spawning)
 #   • Concurrent execution guard (lock file prevents race conditions)
 #   • Pre-upgrade version snapshots for rollback reference
-#   • Quarantine/Gatekeeper pre-flight checks for macOS 26+ compatibility
+#   • Quarantine/Gatekeeper pre-flight checks for macOS compatibility
 #   • Auto-update cask filtering (skip casks that self-update)
+#   • Subdependency management: npm globals, pip/pipx, gem, mas (App Store)
 #   • JSONL structured event logging + human-readable logs
 #   • Bounded exponential backoff retry with circuit breaker
 #   • Interactive mode with fzf integration (optional)
-#
-# Flags
-#   --formula-only          Only upgrade formulae
-#   --cask-only             Only upgrade casks
-#   --no-greedy             Don't pass --greedy for casks
-#   --skip-auto-update      Skip casks with auto_updates: true
-#   --upgrade-pinned        Temporarily unpin → upgrade → re-pin
-#   --leave-unpinned        Don't re-pin after upgrading pinned formulae
-#   --no-cleanup            Skip `brew cleanup`
-#   --doctor                Run `brew doctor` at the end
-#   --dry-run               Plan only; do not perform upgrades
-#   --batch                 Use batch upgrade (single brew call, faster)
-#   --interactive | -i      Select packages interactively via fzf
-#   --json                  Emit machine-readable JSONL event log
-#   --theme=<t>             emoji | classic | minimal | none
-#   --report=<fmt>          md | text | json
-#   --log-dir=<path>        Override log directory
-#   --log-retention=<days>  Days to keep old logs (default: 30)
-#   --yes | -y              Don't prompt for confirmation
-#   --no-color              Disable ANSI color
-#   --verbose | -v          Verbose output
-#   --quiet | -q            Minimal output
-#   --force-update          Force brew update even though upgrade does it
-#   --no-lock               Skip concurrent execution lock
-#   -h | --help             Show help
-#   --version               Show version
+#   • Parallel downloads and batch operations
 #
 # Configuration
 #   Reads from (in order of precedence, highest first):
@@ -57,21 +33,19 @@
 #
 # Requirements
 #   • zsh 5.8+ (uses zsh/datetime, zsh/system)
-#   • Homebrew 5.0+
+#   • Homebrew 4.0+
 #   • macOS 13+ (optimized for macOS 26/Tahoe)
 #   • Optional: jq (for JSON parsing), fzf (for interactive mode)
 #
 # License: MIT
 # =============================================================================
 
-# Version
-typeset -gr __BREWUP_VERSION="2.0.0"
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Module-scoped state (prefixed to avoid collisions)
 # ──────────────────────────────────────────────────────────────────────────────
 typeset -gA __BREWUP_STYLE=()
 typeset -gA __BREWUP_CFG=()
+typeset -gA __BREWUP_INVENTORY=()
 typeset -g  __BREWUP_LOG_DIR=""
 typeset -g  __BREWUP_LOG_FILE=""
 typeset -g  __BREWUP_JSONL=""
@@ -79,6 +53,7 @@ typeset -g  __BREWUP_SNAPSHOT=""
 typeset -g  __BREWUP_LOCK_FD=0
 typeset -g  __BREWUP_LOCK_FILE=""
 typeset -g  __BREWUP_START_TIME=0
+typeset -ga __BREWUP_ERRORS=()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Utility: Timestamps & JSON
@@ -94,32 +69,23 @@ __brewup_now_stamp() {
 __brewup_elapsed() {
     local now="${EPOCHSECONDS:-$(date +%s)}"
     local elapsed=$(( now - __BREWUP_START_TIME ))
-    printf "%dm%02ds" $(( elapsed / 60 )) $(( elapsed % 60 ))
+    if (( elapsed >= 3600 )); then
+        printf "%dh%02dm%02ds" $(( elapsed / 3600 )) $(( (elapsed % 3600) / 60 )) $(( elapsed % 60 ))
+    elif (( elapsed >= 60 )); then
+        printf "%dm%02ds" $(( elapsed / 60 )) $(( elapsed % 60 ))
+    else
+        printf "%ds" "$elapsed"
+    fi
 }
 
 __brewup_json_escape() {
     local s="$1"
-    # Full JSON string escaping per RFC 8259
-    s="${s//\\/\\\\}"      # Backslash first
-    s="${s//\"/\\\"}"      # Double quote
-    s="${s//$'\n'/\\n}"    # Newline
-    s="${s//$'\r'/\\r}"    # Carriage return
-    s="${s//$'\t'/\\t}"    # Tab
-    s="${s//$'\b'/\\b}"    # Backspace
-    s="${s//$'\f'/\\f}"    # Form feed
-    # Control characters (0x00-0x1F) - replace with \uXXXX
-    local i char code
-    local result=""
-    for (( i=0; i < ${#s}; i++ )); do
-        char="${s:$i:1}"
-        code=$(printf '%d' "'$char")
-        if (( code >= 0 && code < 32 )); then
-            result+=$(printf '\\u%04x' "$code")
-        else
-            result+="$char"
-        fi
-    done
-    print -rn -- "$result"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\r'/\\r}"
+    s="${s//$'\t'/\\t}"
+    print -rn -- "$s"
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -130,6 +96,10 @@ __brewup_load_config() {
     __BREWUP_CFG=(
         do_formulae       1
         do_casks          1
+        do_npm            0
+        do_pip            0
+        do_gem            0
+        do_mas            0
         cask_greedy       1
         skip_auto_update  0
         upgrade_pinned    0
@@ -146,25 +116,35 @@ __brewup_load_config() {
         quiet             0
         force_update      0
         use_lock          1
+        parallel          1
+        health_check      1
         report_fmt        "text"
         theme             "emoji"
         log_dir           ""
         log_retention     30
         subcmd            "run"
+        rollback_pkg      ""
     )
 
     # Load from config file
     local config_file="${XDG_CONFIG_HOME:-$HOME/.config}/brewup/config"
     if [[ -r "$config_file" ]]; then
         local line key val
-        while IFS='=' read -r key val || [[ -n "$key" ]]; do
+        while IFS= read -r line || [[ -n "$line" ]]; do
             # Skip comments and empty lines
-            [[ "$key" =~ ^[[:space:]]*# ]] && continue
-            [[ -z "$key" ]] && continue
+            [[ "$line" =~ ^[[:space:]]*# ]] && continue
+            [[ -z "${line// }" ]] && continue
+            # Parse key = value
+            key="${line%%=*}"
+            val="${line#*=}"
             # Trim whitespace
             key="${key//[[:space:]]/}"
-            val="${val//[[:space:]]/}"
-            # Normalize key (BREWUP_THEME -> theme, theme -> theme)
+            val="${val#"${val%%[![:space:]]*}"}"
+            val="${val%"${val##*[![:space:]]}"}"
+            # Remove quotes
+            val="${val#\"}" && val="${val%\"}"
+            val="${val#\'}" && val="${val%\'}"
+            # Normalize key
             key="${key#BREWUP_}"
             key="${(L)key}"
             # Map to internal config
@@ -193,6 +173,25 @@ __brewup_load_config() {
                     [[ "$val" == "1" || "$val" == "true" ]] && __BREWUP_CFG[verbose]=1 ;;
                 quiet)
                     [[ "$val" == "1" || "$val" == "true" ]] && __BREWUP_CFG[quiet]=1 ;;
+                npm|do_npm)
+                    [[ "$val" == "1" || "$val" == "true" ]] && __BREWUP_CFG[do_npm]=1 ;;
+                pip|do_pip)
+                    [[ "$val" == "1" || "$val" == "true" ]] && __BREWUP_CFG[do_pip]=1 ;;
+                gem|do_gem)
+                    [[ "$val" == "1" || "$val" == "true" ]] && __BREWUP_CFG[do_gem]=1 ;;
+                mas|do_mas)
+                    [[ "$val" == "1" || "$val" == "true" ]] && __BREWUP_CFG[do_mas]=1 ;;
+                parallel)
+                    [[ "$val" == "0" || "$val" == "false" ]] && __BREWUP_CFG[parallel]=0 ;;
+                health_check)
+                    [[ "$val" == "0" || "$val" == "false" ]] && __BREWUP_CFG[health_check]=0 ;;
+                all)
+                    if [[ "$val" == "1" || "$val" == "true" ]]; then
+                        __BREWUP_CFG[do_npm]=1
+                        __BREWUP_CFG[do_pip]=1
+                        __BREWUP_CFG[do_gem]=1
+                        __BREWUP_CFG[do_mas]=1
+                    fi ;;
             esac
         done < "$config_file"
     fi
@@ -202,25 +201,63 @@ __brewup_load_config() {
     [[ -n "$BREWUP_LOG_DIR" ]]       && __BREWUP_CFG[log_dir]="$BREWUP_LOG_DIR"
     [[ -n "$BREWUP_LOG_RETENTION" ]] && __BREWUP_CFG[log_retention]="$BREWUP_LOG_RETENTION"
     [[ -n "$BREWUP_REPORT_FMT" ]]    && __BREWUP_CFG[report_fmt]="$BREWUP_REPORT_FMT"
-    [[ "$BREWUP_NO_GREEDY" == "1" ]]       && __BREWUP_CFG[cask_greedy]=0
+    [[ "$BREWUP_NO_GREEDY" == "1" ]]        && __BREWUP_CFG[cask_greedy]=0
     [[ "$BREWUP_SKIP_AUTO_UPDATE" == "1" ]] && __BREWUP_CFG[skip_auto_update]=1
-    [[ "$BREWUP_BATCH" == "1" ]]           && __BREWUP_CFG[batch_mode]=1
-    [[ "$BREWUP_VERBOSE" == "1" ]]         && __BREWUP_CFG[verbose]=1
-    [[ "$BREWUP_QUIET" == "1" ]]           && __BREWUP_CFG[quiet]=1
-    [[ "$BREWUP_NO_COLOR" == "1" ]]        && __BREWUP_CFG[use_color]=0
-    [[ "$BREWUP_YES" == "1" ]]             && __BREWUP_CFG[assume_yes]=1
+    [[ "$BREWUP_BATCH" == "1" ]]            && __BREWUP_CFG[batch_mode]=1
+    [[ "$BREWUP_VERBOSE" == "1" ]]          && __BREWUP_CFG[verbose]=1
+    [[ "$BREWUP_QUIET" == "1" ]]            && __BREWUP_CFG[quiet]=1
+    [[ "$BREWUP_NO_COLOR" == "1" ]]         && __BREWUP_CFG[use_color]=0
+    [[ "$BREWUP_YES" == "1" ]]              && __BREWUP_CFG[assume_yes]=1
+    [[ "$BREWUP_NPM" == "1" ]]              && __BREWUP_CFG[do_npm]=1
+    [[ "$BREWUP_PIP" == "1" ]]              && __BREWUP_CFG[do_pip]=1
+    [[ "$BREWUP_GEM" == "1" ]]              && __BREWUP_CFG[do_gem]=1
+    [[ "$BREWUP_MAS" == "1" ]]              && __BREWUP_CFG[do_mas]=1
+    [[ "$BREWUP_ALL" == "1" ]]              && {
+        __BREWUP_CFG[do_npm]=1
+        __BREWUP_CFG[do_pip]=1
+        __BREWUP_CFG[do_gem]=1
+        __BREWUP_CFG[do_mas]=1
+    }
+    [[ "$BREWUP_NO_PARALLEL" == "1" ]]      && __BREWUP_CFG[parallel]=0
+    [[ "$BREWUP_NO_HEALTH_CHECK" == "1" ]]  && __BREWUP_CFG[health_check]=0
 }
 
 __brewup_parse_args() {
     local arg
     for arg in "$@"; do
         case "$arg" in
-            plan|run|update|upgrade|doctor|summary|report|config|version)
+            plan|run|update|upgrade|doctor|summary|report|config|rollback)
                 __BREWUP_CFG[subcmd]="$arg" ;;
             --formula-only|--formulae-only)
-                __BREWUP_CFG[do_casks]=0 ;;
+                __BREWUP_CFG[do_casks]=0
+                __BREWUP_CFG[do_npm]=0
+                __BREWUP_CFG[do_pip]=0
+                __BREWUP_CFG[do_gem]=0
+                __BREWUP_CFG[do_mas]=0 ;;
             --cask-only|--casks-only)
-                __BREWUP_CFG[do_formulae]=0 ;;
+                __BREWUP_CFG[do_formulae]=0
+                __BREWUP_CFG[do_npm]=0
+                __BREWUP_CFG[do_pip]=0
+                __BREWUP_CFG[do_gem]=0
+                __BREWUP_CFG[do_mas]=0 ;;
+            --brew-only)
+                __BREWUP_CFG[do_npm]=0
+                __BREWUP_CFG[do_pip]=0
+                __BREWUP_CFG[do_gem]=0
+                __BREWUP_CFG[do_mas]=0 ;;
+            --npm|--with-npm)
+                __BREWUP_CFG[do_npm]=1 ;;
+            --pip|--with-pip)
+                __BREWUP_CFG[do_pip]=1 ;;
+            --gem|--with-gem)
+                __BREWUP_CFG[do_gem]=1 ;;
+            --mas|--with-mas)
+                __BREWUP_CFG[do_mas]=1 ;;
+            --all|-a)
+                __BREWUP_CFG[do_npm]=1
+                __BREWUP_CFG[do_pip]=1
+                __BREWUP_CFG[do_gem]=1
+                __BREWUP_CFG[do_mas]=1 ;;
             --no-greedy)
                 __BREWUP_CFG[cask_greedy]=0 ;;
             --skip-auto-update|--skip-auto-updates)
@@ -255,6 +292,10 @@ __brewup_parse_args() {
                 __BREWUP_CFG[force_update]=1 ;;
             --no-lock)
                 __BREWUP_CFG[use_lock]=0 ;;
+            --no-parallel|--sequential)
+                __BREWUP_CFG[parallel]=0 ;;
+            --no-health-check)
+                __BREWUP_CFG[health_check]=0 ;;
             --theme=*)
                 __BREWUP_CFG[theme]="${arg#*=}" ;;
             --report=*)
@@ -263,11 +304,11 @@ __brewup_parse_args() {
                 __BREWUP_CFG[log_dir]="${arg#*=}" ;;
             --log-retention=*)
                 __BREWUP_CFG[log_retention]="${arg#*=}" ;;
+            --rollback=*)
+                __BREWUP_CFG[subcmd]="rollback"
+                __BREWUP_CFG[rollback_pkg]="${arg#*=}" ;;
             -h|--help)
                 __brewup_help
-                return 1 ;;
-            --version)
-                print "brewup $__BREWUP_VERSION"
                 return 1 ;;
             -*)
                 print -u2 "brewup: unknown option: $arg"
@@ -301,24 +342,24 @@ __brewup_init_style() {
     case "$theme" in
         none)
             __BREWUP_STYLE=(
-                success_icon "" fail_icon "" info_icon "" warn_icon "" skip_icon ""
+                success_icon "" fail_icon "" info_icon "" warn_icon "" skip_icon "" pkg_icon ""
                 bold "" dim "" red "" green "" yellow "" blue "" magenta "" cyan "" reset ""
             ) ;;
         minimal)
             __BREWUP_STYLE=(
-                success_icon "[OK]" fail_icon "[FAIL]" info_icon "[*]" warn_icon "[!]" skip_icon "[-]"
+                success_icon "[OK]" fail_icon "[FAIL]" info_icon "[*]" warn_icon "[!]" skip_icon "[-]" pkg_icon "[>]"
                 bold "$bold" dim "$dim" red "$red" green "$green" yellow "$yellow"
                 blue "$blue" magenta "$magenta" cyan "$cyan" reset "$reset"
             ) ;;
         classic)
             __BREWUP_STYLE=(
-                success_icon "✔" fail_icon "✖" info_icon "•" warn_icon "⚠" skip_icon "○"
+                success_icon "+" fail_icon "x" info_icon "*" warn_icon "!" skip_icon "-" pkg_icon ">"
                 bold "$bold" dim "$dim" red "$red" green "$green" yellow "$yellow"
                 blue "$blue" magenta "$magenta" cyan "$cyan" reset "$reset"
             ) ;;
         emoji|*)
             __BREWUP_STYLE=(
-                success_icon "✅" fail_icon "❌" info_icon "ℹ️ " warn_icon "⚠️ " skip_icon "⏭️ "
+                success_icon "ok" fail_icon "err" info_icon "i" warn_icon "!" skip_icon "~" pkg_icon ">"
                 bold "$bold" dim "$dim" red "$red" green "$green" yellow "$yellow"
                 blue "$blue" magenta "$magenta" cyan "$cyan" reset "$reset"
             ) ;;
@@ -335,35 +376,36 @@ __brewup_print() {
 
 __brewup_info() {
     (( __BREWUP_CFG[quiet] )) && { __brewup_log "INFO: $*"; return 0; }
-    print -- "${__BREWUP_STYLE[blue]}${__BREWUP_STYLE[info_icon]}${__BREWUP_STYLE[reset]} $*"
+    print -- "${__BREWUP_STYLE[blue]}[${__BREWUP_STYLE[info_icon]}]${__BREWUP_STYLE[reset]} $*"
     __brewup_log "INFO: $*"
 }
 
 __brewup_ok() {
     (( __BREWUP_CFG[quiet] )) && { __brewup_log "OK: $*"; return 0; }
-    print -- "${__BREWUP_STYLE[green]}${__BREWUP_STYLE[success_icon]}${__BREWUP_STYLE[reset]} $*"
+    print -- "${__BREWUP_STYLE[green]}[${__BREWUP_STYLE[success_icon]}]${__BREWUP_STYLE[reset]} $*"
     __brewup_log "OK: $*"
 }
 
 __brewup_warn() {
-    print -- "${__BREWUP_STYLE[yellow]}${__BREWUP_STYLE[warn_icon]}${__BREWUP_STYLE[reset]} $*"
+    print -- "${__BREWUP_STYLE[yellow]}[${__BREWUP_STYLE[warn_icon]}]${__BREWUP_STYLE[reset]} $*"
     __brewup_log "WARN: $*"
 }
 
 __brewup_err() {
-    print -u2 -- "${__BREWUP_STYLE[red]}${__BREWUP_STYLE[fail_icon]} ${*}${__BREWUP_STYLE[reset]}"
+    print -u2 -- "${__BREWUP_STYLE[red]}[${__BREWUP_STYLE[fail_icon]}] ${*}${__BREWUP_STYLE[reset]}"
     __brewup_log "ERROR: $*"
+    __BREWUP_ERRORS+=("$*")
 }
 
 __brewup_skip() {
     (( __BREWUP_CFG[quiet] )) && { __brewup_log "SKIP: $*"; return 0; }
-    print -- "${__BREWUP_STYLE[dim]}${__BREWUP_STYLE[skip_icon]}${__BREWUP_STYLE[reset]} $*"
+    print -- "${__BREWUP_STYLE[dim]}[${__BREWUP_STYLE[skip_icon]}]${__BREWUP_STYLE[reset]} $*"
     __brewup_log "SKIP: $*"
 }
 
 __brewup_verbose() {
     (( ! __BREWUP_CFG[verbose] )) && return 0
-    print -- "${__BREWUP_STYLE[dim]}  → $*${__BREWUP_STYLE[reset]}"
+    print -- "${__BREWUP_STYLE[dim]}    $*${__BREWUP_STYLE[reset]}"
     __brewup_log "VERBOSE: $*"
 }
 
@@ -371,21 +413,17 @@ __brewup_sect() {
     local title="$*"
     (( __BREWUP_CFG[quiet] )) && { __brewup_log "=== $title ==="; return 0; }
     print
-    print -- "${__BREWUP_STYLE[magenta]}${__BREWUP_STYLE[bold]}━━━ ${title} ━━━${__BREWUP_STYLE[reset]}"
+    print -- "${__BREWUP_STYLE[magenta]}${__BREWUP_STYLE[bold]}--- ${title} ---${__BREWUP_STYLE[reset]}"
     __brewup_log "=== $title ==="
 }
 
 __brewup_banner() {
     (( __BREWUP_CFG[quiet] )) && return 0
-    local when ver
+    local when
     when="$(__brewup_now_iso)"
-    ver="$(brew --version 2>/dev/null | head -n1)"
 
-    print -- "${__BREWUP_STYLE[cyan]}╭───────────────────────────────────────────────────────────────╮${__BREWUP_STYLE[reset]}"
-    print -- "${__BREWUP_STYLE[cyan]}│${__BREWUP_STYLE[reset]}  ${__BREWUP_STYLE[bold]}BrewUp v${__BREWUP_VERSION}${__BREWUP_STYLE[reset]} — Safe Homebrew Maintenance              ${__BREWUP_STYLE[cyan]}│${__BREWUP_STYLE[reset]}"
-    print -- "${__BREWUP_STYLE[cyan]}│${__BREWUP_STYLE[reset]}  ${__BREWUP_STYLE[dim]}${when}${__BREWUP_STYLE[reset]}                              ${__BREWUP_STYLE[cyan]}│${__BREWUP_STYLE[reset]}"
-    print -- "${__BREWUP_STYLE[cyan]}╰───────────────────────────────────────────────────────────────╯${__BREWUP_STYLE[reset]}"
-    [[ -n "$ver" ]] && print -- "${__BREWUP_STYLE[dim]}$ver${__BREWUP_STYLE[reset]}"
+    print -- "${__BREWUP_STYLE[cyan]}${__BREWUP_STYLE[bold]}BrewUp${__BREWUP_STYLE[reset]} ${__BREWUP_STYLE[dim]}— Safe System Software Maintenance${__BREWUP_STYLE[reset]}"
+    print -- "${__BREWUP_STYLE[dim]}${when}${__BREWUP_STYLE[reset]}"
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -431,9 +469,9 @@ __brewup_init_logs() {
     umask 022
 
     # Log session start
-    __brewup_log "Session started: brewup $__BREWUP_VERSION"
+    __brewup_log "Session started"
     __brewup_log "Command: brewup ${__BREWUP_CFG[subcmd]}"
-    __brewup_jlog "{\"ts\":\"$(__brewup_now_iso)\",\"event\":\"session_start\",\"version\":\"$__BREWUP_VERSION\"}"
+    __brewup_jlog "{\"ts\":\"$(__brewup_now_iso)\",\"event\":\"session_start\"}"
 }
 
 __brewup_acquire_lock() {
@@ -481,48 +519,51 @@ __brewup_require_brew() {
         __brewup_err "Homebrew not found. Install from https://brew.sh"
         return 127
     fi
+    return 0
+}
 
-    # Check minimum Homebrew version
-    local brew_ver
-    brew_ver=$(brew --version 2>/dev/null | head -n1 | grep -oE '[0-9]+\.[0-9]+' | head -n1)
-    if [[ -n "$brew_ver" ]]; then
-        local major="${brew_ver%%.*}"
-        if (( major < 4 )); then
-            __brewup_warn "Homebrew $brew_ver detected. Version 4.0+ recommended for best results."
+__brewup_health_check() {
+    (( ! __BREWUP_CFG[health_check] )) && return 0
+
+    local issues=0
+    __brewup_verbose "Running pre-flight health checks..."
+
+    # Check disk space (minimum 1GB)
+    local min_mb=1024
+    local avail_kb
+    avail_kb=$(df -k "$(brew --prefix 2>/dev/null || echo /)" 2>/dev/null | awk 'NR==2 {print $4}')
+    if [[ -n "$avail_kb" ]] && (( avail_kb < min_mb * 1024 )); then
+        local avail_mb=$(( avail_kb / 1024 ))
+        __brewup_warn "Low disk space: ${avail_mb}MB available (recommend ${min_mb}MB+)"
+        (( issues++ ))
+    fi
+
+    # Check network connectivity
+    if ! ping -c1 -t2 github.com >/dev/null 2>&1; then
+        __brewup_warn "Network connectivity issue: cannot reach github.com"
+        (( issues++ ))
+    fi
+
+    # Check if Homebrew prefix is writable
+    local brew_prefix
+    brew_prefix="$(brew --prefix 2>/dev/null)"
+    if [[ -n "$brew_prefix" && ! -w "$brew_prefix/Cellar" ]]; then
+        __brewup_warn "Homebrew Cellar is not writable: $brew_prefix/Cellar"
+        (( issues++ ))
+    fi
+
+    # macOS: Check quarantine for casks
+    if (( __BREWUP_CFG[do_casks] )) && [[ "$OSTYPE" == darwin* ]]; then
+        # Check if terminal has App Management permission (macOS 13+)
+        local os_ver
+        os_ver=$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)
+        if [[ -n "$os_ver" ]] && (( os_ver >= 13 )); then
+            __brewup_verbose "macOS ${os_ver}: App Management permission may be required for cask upgrades"
         fi
     fi
+
+    (( issues > 0 )) && __brewup_warn "$issues pre-flight issue(s) detected"
     return 0
-}
-
-__brewup_check_quarantine() {
-    (( ! __BREWUP_CFG[do_casks] )) && return 0
-
-    local brew_repo
-    brew_repo="$(brew --repo 2>/dev/null)"
-    local quarantine_swift="${brew_repo}/Library/Homebrew/cask/utils/quarantine.swift"
-
-    if [[ ! -f "$quarantine_swift" ]]; then
-        __brewup_verbose "Quarantine check script not found (normal for some Homebrew versions)"
-        return 0
-    fi
-
-    # Check if quarantine support is available
-    if ! swift "$quarantine_swift" 2>/dev/null | grep -q "Quarantine is available"; then
-        __brewup_warn "Quarantine support may be limited."
-        __brewup_warn "If cask upgrades fail, grant 'App Management' permission to Terminal in:"
-        __brewup_warn "  System Settings → Privacy & Security → App Management"
-    fi
-    return 0
-}
-
-__brewup_check_disk_space() {
-    local min_gb=2
-    local avail_kb
-    avail_kb=$(df -k "$(brew --prefix)" 2>/dev/null | awk 'NR==2 {print $4}')
-    if [[ -n "$avail_kb" ]] && (( avail_kb < min_gb * 1024 * 1024 )); then
-        local avail_gb=$(( avail_kb / 1024 / 1024 ))
-        __brewup_warn "Low disk space: ${avail_gb}GB available (recommend ${min_gb}GB+)"
-    fi
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -574,8 +615,8 @@ __brewup_retry() {
 # Inventory Collection (Single-pass JSON)
 # ──────────────────────────────────────────────────────────────────────────────
 __brewup_collect_inventory() {
-    local -A inv
     local -a outdated_formulae=() outdated_casks=() pinned_formulae=() auto_update_casks=()
+    local -a npm_outdated=() pip_outdated=() gem_outdated=() mas_outdated=()
 
     __brewup_verbose "Collecting package inventory..."
 
@@ -588,8 +629,7 @@ __brewup_collect_inventory() {
         fi
     fi
 
-    # Collect outdated packages
-    # Try JSON mode first (more efficient, gets auto_updates info)
+    # Collect outdated Homebrew packages
     if command -v jq >/dev/null 2>&1; then
         __brewup_verbose "Using JSON API for inventory"
         local json_out
@@ -609,10 +649,8 @@ __brewup_collect_inventory() {
 
             json_out=$(brew outdated --cask "${cask_flags[@]}" --json 2>/dev/null)
             if [[ -n "$json_out" && "$json_out" != "[]" ]]; then
-                # Get all outdated cask names
                 local all_casks=("${(@f)$(echo "$json_out" | jq -r '.[].name' 2>/dev/null)}")
 
-                # If skip_auto_update is set, filter out auto-updating casks
                 if (( __BREWUP_CFG[skip_auto_update] )); then
                     local cask
                     for cask in "${all_casks[@]}"; do
@@ -651,17 +689,63 @@ __brewup_collect_inventory() {
         fi
     fi
 
+    # Collect npm global outdated packages
+    if (( __BREWUP_CFG[do_npm] )) && command -v npm >/dev/null 2>&1; then
+        __brewup_verbose "Checking npm global packages..."
+        local npm_raw
+        npm_raw=$(npm outdated -g --parseable 2>/dev/null | cut -d: -f4)
+        [[ -n "$npm_raw" ]] && npm_outdated=("${(@f)npm_raw}")
+    fi
+
+    # Collect pip/pipx outdated packages
+    if (( __BREWUP_CFG[do_pip] )); then
+        if command -v pipx >/dev/null 2>&1; then
+            __brewup_verbose "Checking pipx packages..."
+            local pipx_raw
+            pipx_raw=$(pipx list --short 2>/dev/null | awk '{print $1}')
+            [[ -n "$pipx_raw" ]] && pip_outdated=("${(@f)pipx_raw}")
+        elif command -v pip3 >/dev/null 2>&1; then
+            __brewup_verbose "Checking pip packages..."
+            local pip_raw
+            pip_raw=$(pip3 list --outdated --format=freeze 2>/dev/null | cut -d= -f1)
+            [[ -n "$pip_raw" ]] && pip_outdated=("${(@f)pip_raw}")
+        fi
+    fi
+
+    # Collect gem outdated packages
+    if (( __BREWUP_CFG[do_gem] )) && command -v gem >/dev/null 2>&1; then
+        __brewup_verbose "Checking gem packages..."
+        local gem_raw
+        gem_raw=$(gem outdated 2>/dev/null | awk '{print $1}')
+        [[ -n "$gem_raw" ]] && gem_outdated=("${(@f)gem_raw}")
+    fi
+
+    # Collect Mac App Store outdated apps
+    if (( __BREWUP_CFG[do_mas] )) && command -v mas >/dev/null 2>&1; then
+        __brewup_verbose "Checking Mac App Store..."
+        local mas_raw
+        mas_raw=$(mas outdated 2>/dev/null | awk '{print $1}')
+        [[ -n "$mas_raw" ]] && mas_outdated=("${(@f)mas_raw}")
+    fi
+
     # Export results via global associative array
-    typeset -gA __BREWUP_INVENTORY
     __BREWUP_INVENTORY=(
         formulae_count      "${#outdated_formulae[@]}"
         casks_count         "${#outdated_casks[@]}"
         pinned_count        "${#pinned_formulae[@]}"
         auto_update_count   "${#auto_update_casks[@]}"
+        npm_count           "${#npm_outdated[@]}"
+        pip_count           "${#pip_outdated[@]}"
+        gem_count           "${#gem_outdated[@]}"
+        mas_count           "${#mas_outdated[@]}"
         formulae            "${(j:,:)outdated_formulae}"
         casks               "${(j:,:)outdated_casks}"
         pinned              "${(j:,:)pinned_formulae}"
         auto_update_skipped "${(j:,:)auto_update_casks}"
+        npm                 "${(j:,:)npm_outdated}"
+        pip                 "${(j:,:)pip_outdated}"
+        gem                 "${(j:,:)gem_outdated}"
+        mas                 "${(j:,:)mas_outdated}"
     )
 }
 
@@ -680,6 +764,24 @@ __brewup_snapshot() {
         print ""
         print "## Installed Casks"
         brew list --cask --versions 2>/dev/null
+
+        if (( __BREWUP_CFG[do_npm] )) && command -v npm >/dev/null 2>&1; then
+            print ""
+            print "## NPM Global Packages"
+            npm list -g --depth=0 2>/dev/null
+        fi
+
+        if (( __BREWUP_CFG[do_pip] )) && command -v pipx >/dev/null 2>&1; then
+            print ""
+            print "## Pipx Packages"
+            pipx list --short 2>/dev/null
+        fi
+
+        if (( __BREWUP_CFG[do_gem] )) && command -v gem >/dev/null 2>&1; then
+            print ""
+            print "## Gem Packages"
+            gem list 2>/dev/null
+        fi
     } > "$__BREWUP_SNAPSHOT"
 
     __brewup_log "Snapshot saved: $__BREWUP_SNAPSHOT"
@@ -693,6 +795,11 @@ __brewup_print_plan() {
     local cask_count="${__BREWUP_INVENTORY[casks_count]}"
     local pinned_count="${__BREWUP_INVENTORY[pinned_count]}"
     local auto_skipped="${__BREWUP_INVENTORY[auto_update_count]}"
+    local npm_count="${__BREWUP_INVENTORY[npm_count]}"
+    local pip_count="${__BREWUP_INVENTORY[pip_count]}"
+    local gem_count="${__BREWUP_INVENTORY[gem_count]}"
+    local mas_count="${__BREWUP_INVENTORY[mas_count]}"
+
     local -a formulae=() casks=() pinned=()
 
     [[ -n "${__BREWUP_INVENTORY[formulae]}" ]] && formulae=("${(@s:,:)__BREWUP_INVENTORY[formulae]}")
@@ -701,48 +808,77 @@ __brewup_print_plan() {
 
     __brewup_print ""
     __brewup_print "${__BREWUP_STYLE[bold]}Upgrade Plan${__BREWUP_STYLE[reset]}"
-    __brewup_print "  Formulae: ${form_count} outdated"
-    __brewup_print "  Casks:    ${cask_count} outdated$( (( __BREWUP_CFG[cask_greedy] )) && print -n ' (greedy)' )"
-    (( pinned_count > 0 )) && __brewup_print "  Pinned:   ${pinned_count} formula(e)"
-    (( auto_skipped > 0 )) && __brewup_print "  Skipped:  ${auto_skipped} auto-updating cask(s)"
 
+    # Homebrew summary
+    local brew_total=$(( form_count + cask_count ))
+    if (( brew_total > 0 || pinned_count > 0 || auto_skipped > 0 )); then
+        __brewup_print "  ${__BREWUP_STYLE[cyan]}Homebrew${__BREWUP_STYLE[reset]}"
+        (( form_count > 0 )) && __brewup_print "    Formulae: ${form_count}"
+        (( cask_count > 0 )) && __brewup_print "    Casks:    ${cask_count}$( (( __BREWUP_CFG[cask_greedy] )) && print -n ' (greedy)' )"
+        (( pinned_count > 0 )) && __brewup_print "    Pinned:   ${pinned_count} (will skip)"
+        (( auto_skipped > 0 )) && __brewup_print "    Skipped:  ${auto_skipped} (auto-updating)"
+    fi
+
+    # Subdependency managers
+    (( npm_count > 0 )) && __brewup_print "  ${__BREWUP_STYLE[cyan]}NPM Global${__BREWUP_STYLE[reset]}: ${npm_count} package(s)"
+    (( pip_count > 0 )) && __brewup_print "  ${__BREWUP_STYLE[cyan]}Pip/Pipx${__BREWUP_STYLE[reset]}:   ${pip_count} package(s)"
+    (( gem_count > 0 )) && __brewup_print "  ${__BREWUP_STYLE[cyan]}Gem${__BREWUP_STYLE[reset]}:        ${gem_count} package(s)"
+    (( mas_count > 0 )) && __brewup_print "  ${__BREWUP_STYLE[cyan]}App Store${__BREWUP_STYLE[reset]}: ${mas_count} app(s)"
+
+    # Detailed lists
     if (( form_count > 0 )); then
         __brewup_print ""
-        __brewup_print "${__BREWUP_STYLE[dim]}Outdated formulae:${__BREWUP_STYLE[reset]}"
+        __brewup_print "${__BREWUP_STYLE[dim]}Formulae:${__BREWUP_STYLE[reset]}"
         local f
         for f in "${formulae[@]}"; do
             local marker=""
-            # Check if pinned (fixed detection using (Ie) for exact match)
             if (( ${#pinned[@]} )) && (( ${pinned[(Ie)$f]} )); then
                 marker=" ${__BREWUP_STYLE[yellow]}(pinned)${__BREWUP_STYLE[reset]}"
             fi
-            __brewup_print "  • $f$marker"
+            __brewup_print "  ${__BREWUP_STYLE[pkg_icon]} $f$marker"
         done
     fi
 
     if (( cask_count > 0 )); then
         __brewup_print ""
-        __brewup_print "${__BREWUP_STYLE[dim]}Outdated casks:${__BREWUP_STYLE[reset]}"
+        __brewup_print "${__BREWUP_STYLE[dim]}Casks:${__BREWUP_STYLE[reset]}"
         local c
         for c in "${casks[@]}"; do
-            __brewup_print "  • $c"
+            __brewup_print "  ${__BREWUP_STYLE[pkg_icon]} $c"
         done
     fi
 
-    if (( auto_skipped > 0 )) && [[ -n "${__BREWUP_INVENTORY[auto_update_skipped]}" ]]; then
+    if (( npm_count > 0 )) && [[ -n "${__BREWUP_INVENTORY[npm]}" ]]; then
         __brewup_print ""
-        __brewup_print "${__BREWUP_STYLE[dim]}Skipped (auto-updating):${__BREWUP_STYLE[reset]}"
-        local -a skipped=("${(@s:,:)__BREWUP_INVENTORY[auto_update_skipped]}")
-        local s
-        for s in "${skipped[@]}"; do
-            __brewup_print "  • $s"
+        __brewup_print "${__BREWUP_STYLE[dim]}NPM:${__BREWUP_STYLE[reset]}"
+        local -a npm_pkgs=("${(@s:,:)__BREWUP_INVENTORY[npm]}")
+        for f in "${npm_pkgs[@]}"; do
+            __brewup_print "  ${__BREWUP_STYLE[pkg_icon]} $f"
+        done
+    fi
+
+    if (( pip_count > 0 )) && [[ -n "${__BREWUP_INVENTORY[pip]}" ]]; then
+        __brewup_print ""
+        __brewup_print "${__BREWUP_STYLE[dim]}Pip:${__BREWUP_STYLE[reset]}"
+        local -a pip_pkgs=("${(@s:,:)__BREWUP_INVENTORY[pip]}")
+        for f in "${pip_pkgs[@]}"; do
+            __brewup_print "  ${__BREWUP_STYLE[pkg_icon]} $f"
+        done
+    fi
+
+    if (( gem_count > 0 )) && [[ -n "${__BREWUP_INVENTORY[gem]}" ]]; then
+        __brewup_print ""
+        __brewup_print "${__BREWUP_STYLE[dim]}Gem:${__BREWUP_STYLE[reset]}"
+        local -a gem_pkgs=("${(@s:,:)__BREWUP_INVENTORY[gem]}")
+        for f in "${gem_pkgs[@]}"; do
+            __brewup_print "  ${__BREWUP_STYLE[pkg_icon]} $f"
         done
     fi
 
     __brewup_print ""
 
-    # Total count for plan summary
-    local total=$(( form_count + cask_count ))
+    # Total count
+    local total=$(( form_count + cask_count + npm_count + pip_count + gem_count + mas_count ))
     if (( total == 0 )); then
         __brewup_ok "Everything is up to date!"
         return 1
@@ -767,7 +903,6 @@ __brewup_interactive_select() {
     [[ -n "${__BREWUP_INVENTORY[formulae]}" ]] && formulae=("${(@s:,:)__BREWUP_INVENTORY[formulae]}")
     [[ -n "${__BREWUP_INVENTORY[casks]}" ]]    && casks=("${(@s:,:)__BREWUP_INVENTORY[casks]}")
 
-    # Build selection list with type prefix
     local f c
     for f in "${formulae[@]}"; do
         all_packages+=("[formula] $f")
@@ -794,7 +929,6 @@ __brewup_interactive_select() {
         return 1
     fi
 
-    # Parse selection back into separate arrays
     local -a selected_formulae=() selected_casks=()
     local line
     while IFS= read -r line; do
@@ -805,7 +939,6 @@ __brewup_interactive_select() {
         fi
     done <<< "$selected"
 
-    # Update inventory with selection
     __BREWUP_INVENTORY[formulae]="${(j:,:)selected_formulae}"
     __BREWUP_INVENTORY[casks]="${(j:,:)selected_casks}"
     __BREWUP_INVENTORY[formulae_count]="${#selected_formulae[@]}"
@@ -834,7 +967,7 @@ __brewup_upgrade_formulae() {
     local leave_unpinned="${__BREWUP_CFG[leave_unpinned]}"
     local json="${__BREWUP_CFG[output_json]}"
 
-    # Batch mode: single brew upgrade call
+    # Batch mode
     if (( batch && ! dry )); then
         local -a to_upgrade=()
         local -a pinned_to_upgrade=()
@@ -855,14 +988,12 @@ __brewup_upgrade_formulae() {
             fi
         done
 
-        # Unpin pinned formulae temporarily
         if (( ${#pinned_to_upgrade[@]} > 0 )); then
             __brewup_info "Temporarily unpinning ${#pinned_to_upgrade[@]} formula(e)..."
             brew unpin "${pinned_to_upgrade[@]}" 2>/dev/null
             to_upgrade+=("${pinned_to_upgrade[@]}")
         fi
 
-        # Batch upgrade
         if (( ${#to_upgrade[@]} > 0 )); then
             __brewup_info "Upgrading ${#to_upgrade[@]} formula(e) in batch mode..."
             __brewup_retry 3 __brewup_run brew upgrade "${to_upgrade[@]}"
@@ -877,7 +1008,6 @@ __brewup_upgrade_formulae() {
             fi
         fi
 
-        # Re-pin if needed
         if (( ${#pinned_to_upgrade[@]} > 0 && ! leave_unpinned )); then
             __brewup_info "Re-pinning formula(e)..."
             brew pin "${pinned_to_upgrade[@]}" 2>/dev/null
@@ -886,7 +1016,7 @@ __brewup_upgrade_formulae() {
         return 0
     fi
 
-    # Sequential mode (default): upgrade one by one
+    # Sequential mode
     local idx=0 rc
     for f in "${formulae[@]}"; do
         (( idx++ ))
@@ -896,7 +1026,7 @@ __brewup_upgrade_formulae() {
         __brewup_print "[$idx/$count] $f"
 
         if (( is_pinned && ! upgrade_pinned )); then
-            __brewup_skip "  pinned → skipping"
+            __brewup_skip "  pinned"
             (( json )) && __brewup_jlog "{\"ts\":\"$(__brewup_now_iso)\",\"type\":\"formula\",\"name\":\"$(__brewup_json_escape "$f")\",\"action\":\"skip\",\"reason\":\"pinned\"}"
             continue
         fi
@@ -907,7 +1037,6 @@ __brewup_upgrade_formulae() {
             continue
         fi
 
-        # Unpin if needed
         if (( is_pinned )); then
             __brewup_verbose "Temporarily unpinning $f"
             brew unpin "$f" 2>/dev/null || { __brewup_warn "  failed to unpin, skipping"; continue; }
@@ -924,7 +1053,6 @@ __brewup_upgrade_formulae() {
             (( json )) && __brewup_jlog "{\"ts\":\"$(__brewup_now_iso)\",\"type\":\"formula\",\"name\":\"$(__brewup_json_escape "$f")\",\"action\":\"failed\",\"rc\":$rc}"
         fi
 
-        # Re-pin if needed
         if (( is_pinned && ! leave_unpinned )); then
             brew pin "$f" >/dev/null 2>&1
         fi
@@ -945,7 +1073,6 @@ __brewup_upgrade_casks() {
     local greedy="${__BREWUP_CFG[cask_greedy]}"
     local json="${__BREWUP_CFG[output_json]}"
 
-    # Build upgrade flags
     local -a cask_flags=()
     (( greedy )) && cask_flags+=(--greedy)
 
@@ -984,11 +1111,221 @@ __brewup_upgrade_casks() {
             __brewup_ok "  upgraded"
             (( json )) && __brewup_jlog "{\"ts\":\"$(__brewup_now_iso)\",\"type\":\"cask\",\"name\":\"$(__brewup_json_escape "$c")\",\"action\":\"upgraded\"}"
         else
-            __brewup_warn "  upgrade failed (rc=$rc) — may need manual intervention"
+            __brewup_warn "  upgrade failed (rc=$rc)"
             (( json )) && __brewup_jlog "{\"ts\":\"$(__brewup_now_iso)\",\"type\":\"cask\",\"name\":\"$(__brewup_json_escape "$c")\",\"action\":\"failed\",\"rc\":$rc}"
             __brewup_verbose "Try: brew reinstall --cask $c"
         fi
     done
+}
+
+__brewup_upgrade_npm() {
+    local -a npm_pkgs=()
+    [[ -n "${__BREWUP_INVENTORY[npm]}" ]] && npm_pkgs=("${(@s:,:)__BREWUP_INVENTORY[npm]}")
+
+    local count="${#npm_pkgs[@]}"
+    (( count == 0 )) && return 0
+
+    if ! command -v npm >/dev/null 2>&1; then
+        __brewup_warn "npm not found, skipping npm updates"
+        return 0
+    fi
+
+    __brewup_sect "Upgrading NPM Global Packages ($count)"
+
+    local dry="${__BREWUP_CFG[dry_run]}"
+    local json="${__BREWUP_CFG[output_json]}"
+
+    if (( dry )); then
+        for pkg in "${npm_pkgs[@]}"; do
+            __brewup_ok "  (dry-run) would upgrade: $pkg"
+            (( json )) && __brewup_jlog "{\"ts\":\"$(__brewup_now_iso)\",\"type\":\"npm\",\"name\":\"$(__brewup_json_escape "$pkg")\",\"action\":\"plan\"}"
+        done
+        return 0
+    fi
+
+    __brewup_info "Updating all npm global packages..."
+    __brewup_retry 2 __brewup_run npm update -g
+    local rc=$?
+
+    if (( rc == 0 )); then
+        __brewup_ok "NPM global packages updated"
+        for pkg in "${npm_pkgs[@]}"; do
+            (( json )) && __brewup_jlog "{\"ts\":\"$(__brewup_now_iso)\",\"type\":\"npm\",\"name\":\"$(__brewup_json_escape "$pkg")\",\"action\":\"upgraded\"}"
+        done
+    else
+        __brewup_warn "npm update had errors (rc=$rc)"
+    fi
+}
+
+__brewup_upgrade_pip() {
+    local -a pip_pkgs=()
+    [[ -n "${__BREWUP_INVENTORY[pip]}" ]] && pip_pkgs=("${(@s:,:)__BREWUP_INVENTORY[pip]}")
+
+    local count="${#pip_pkgs[@]}"
+    (( count == 0 )) && return 0
+
+    __brewup_sect "Upgrading Pip/Pipx Packages ($count)"
+
+    local dry="${__BREWUP_CFG[dry_run]}"
+    local json="${__BREWUP_CFG[output_json]}"
+
+    if command -v pipx >/dev/null 2>&1; then
+        if (( dry )); then
+            for pkg in "${pip_pkgs[@]}"; do
+                __brewup_ok "  (dry-run) would upgrade: $pkg"
+                (( json )) && __brewup_jlog "{\"ts\":\"$(__brewup_now_iso)\",\"type\":\"pipx\",\"name\":\"$(__brewup_json_escape "$pkg")\",\"action\":\"plan\"}"
+            done
+            return 0
+        fi
+
+        __brewup_info "Upgrading all pipx packages..."
+        __brewup_retry 2 __brewup_run pipx upgrade-all
+        local rc=$?
+
+        if (( rc == 0 )); then
+            __brewup_ok "Pipx packages upgraded"
+            for pkg in "${pip_pkgs[@]}"; do
+                (( json )) && __brewup_jlog "{\"ts\":\"$(__brewup_now_iso)\",\"type\":\"pipx\",\"name\":\"$(__brewup_json_escape "$pkg")\",\"action\":\"upgraded\"}"
+            done
+        else
+            __brewup_warn "pipx upgrade-all had errors (rc=$rc)"
+        fi
+    elif command -v pip3 >/dev/null 2>&1; then
+        __brewup_warn "Direct pip upgrades are not recommended. Consider using pipx instead."
+        __brewup_warn "Install pipx: brew install pipx && pipx ensurepath"
+    else
+        __brewup_warn "Neither pipx nor pip3 found"
+    fi
+}
+
+__brewup_upgrade_gem() {
+    local -a gem_pkgs=()
+    [[ -n "${__BREWUP_INVENTORY[gem]}" ]] && gem_pkgs=("${(@s:,:)__BREWUP_INVENTORY[gem]}")
+
+    local count="${#gem_pkgs[@]}"
+    (( count == 0 )) && return 0
+
+    if ! command -v gem >/dev/null 2>&1; then
+        __brewup_warn "gem not found, skipping gem updates"
+        return 0
+    fi
+
+    __brewup_sect "Upgrading Gem Packages ($count)"
+
+    local dry="${__BREWUP_CFG[dry_run]}"
+    local json="${__BREWUP_CFG[output_json]}"
+
+    if (( dry )); then
+        for pkg in "${gem_pkgs[@]}"; do
+            __brewup_ok "  (dry-run) would upgrade: $pkg"
+            (( json )) && __brewup_jlog "{\"ts\":\"$(__brewup_now_iso)\",\"type\":\"gem\",\"name\":\"$(__brewup_json_escape "$pkg")\",\"action\":\"plan\"}"
+        done
+        return 0
+    fi
+
+    __brewup_info "Updating all gems..."
+    __brewup_retry 2 __brewup_run gem update
+    local rc=$?
+
+    if (( rc == 0 )); then
+        __brewup_ok "Gem packages updated"
+        for pkg in "${gem_pkgs[@]}"; do
+            (( json )) && __brewup_jlog "{\"ts\":\"$(__brewup_now_iso)\",\"type\":\"gem\",\"name\":\"$(__brewup_json_escape "$pkg")\",\"action\":\"upgraded\"}"
+        done
+    else
+        __brewup_warn "gem update had errors (rc=$rc)"
+    fi
+}
+
+__brewup_upgrade_mas() {
+    local -a mas_apps=()
+    [[ -n "${__BREWUP_INVENTORY[mas]}" ]] && mas_apps=("${(@s:,:)__BREWUP_INVENTORY[mas]}")
+
+    local count="${#mas_apps[@]}"
+    (( count == 0 )) && return 0
+
+    if ! command -v mas >/dev/null 2>&1; then
+        __brewup_warn "mas not found, skipping App Store updates"
+        __brewup_warn "Install mas: brew install mas"
+        return 0
+    fi
+
+    __brewup_sect "Upgrading Mac App Store Apps ($count)"
+
+    local dry="${__BREWUP_CFG[dry_run]}"
+    local json="${__BREWUP_CFG[output_json]}"
+
+    if (( dry )); then
+        for app in "${mas_apps[@]}"; do
+            __brewup_ok "  (dry-run) would upgrade: $app"
+            (( json )) && __brewup_jlog "{\"ts\":\"$(__brewup_now_iso)\",\"type\":\"mas\",\"name\":\"$(__brewup_json_escape "$app")\",\"action\":\"plan\"}"
+        done
+        return 0
+    fi
+
+    __brewup_info "Updating App Store apps..."
+    __brewup_retry 2 __brewup_run mas upgrade
+    local rc=$?
+
+    if (( rc == 0 )); then
+        __brewup_ok "App Store apps updated"
+        for app in "${mas_apps[@]}"; do
+            (( json )) && __brewup_jlog "{\"ts\":\"$(__brewup_now_iso)\",\"type\":\"mas\",\"name\":\"$(__brewup_json_escape "$app")\",\"action\":\"upgraded\"}"
+        done
+    else
+        __brewup_warn "mas upgrade had errors (rc=$rc)"
+    fi
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Rollback Support
+# ──────────────────────────────────────────────────────────────────────────────
+__brewup_rollback() {
+    local pkg="${__BREWUP_CFG[rollback_pkg]}"
+
+    if [[ -z "$pkg" ]]; then
+        __brewup_err "Usage: brewup rollback --rollback=<package>"
+        __brewup_info "View available versions with: brew info <package>"
+        return 1
+    fi
+
+    __brewup_sect "Rollback: $pkg"
+
+    # Check if package exists
+    if ! brew info "$pkg" >/dev/null 2>&1; then
+        __brewup_err "Package not found: $pkg"
+        return 1
+    fi
+
+    # Show available versions
+    __brewup_info "Available versions for $pkg:"
+    brew info "$pkg" | head -20
+
+    local __ans=""
+    vared -p "Enter version to rollback to (or 'cancel'): " -c __ans
+
+    if [[ "$__ans" == "cancel" || -z "$__ans" ]]; then
+        __brewup_warn "Rollback cancelled"
+        return 0
+    fi
+
+    __brewup_info "Rolling back $pkg to version $__ans..."
+
+    # For formulae
+    if brew list --formula | grep -q "^${pkg}$"; then
+        brew unlink "$pkg" 2>/dev/null
+        brew install "$pkg@$__ans" 2>/dev/null || brew switch "$pkg" "$__ans" 2>/dev/null
+        local rc=$?
+        if (( rc == 0 )); then
+            __brewup_ok "Rollback successful"
+        else
+            __brewup_err "Rollback failed. You may need to: brew install $pkg@$__ans"
+        fi
+    else
+        # For casks
+        __brewup_warn "Cask rollback is complex. Try: brew reinstall --cask $pkg"
+        __brewup_info "Or download older version from app's website"
+    fi
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -997,6 +1334,18 @@ __brewup_upgrade_casks() {
 __brewup_cleanup() {
     __brewup_sect "Cleanup"
     __brewup_run brew cleanup -s --prune=30 || __brewup_warn "brew cleanup reported issues"
+
+    # Clean npm cache if npm was updated
+    if (( __BREWUP_CFG[do_npm] )) && command -v npm >/dev/null 2>&1; then
+        __brewup_verbose "Cleaning npm cache..."
+        npm cache clean --force >/dev/null 2>&1
+    fi
+
+    # Clean gem cache if gems were updated
+    if (( __BREWUP_CFG[do_gem] )) && command -v gem >/dev/null 2>&1; then
+        __brewup_verbose "Cleaning gem cache..."
+        gem cleanup >/dev/null 2>&1
+    fi
 }
 
 __brewup_doctor() {
@@ -1021,6 +1370,14 @@ __brewup_summary() {
         total_failed=$(grep -c '"action":"failed"' "$__BREWUP_JSONL" 2>/dev/null || echo 0)
     fi
 
+    if (( ${#__BREWUP_ERRORS[@]} > 0 )); then
+        __brewup_warn "Errors encountered:"
+        for err in "${__BREWUP_ERRORS[@]}"; do
+            print -- "  - $err"
+        done
+        print
+    fi
+
     if (( total_failed > 0 )); then
         __brewup_warn "Completed with ${total_failed} failure(s) and ${total_upgraded} success(es)"
     else
@@ -1035,7 +1392,6 @@ __brewup_report() {
     local log_file="$__BREWUP_LOG_FILE"
     local jsonl_file="$__BREWUP_JSONL"
 
-    # Find most recent log if not in active session
     if [[ -z "$log_file" || ! -f "$log_file" ]]; then
         log_file=$(ls -t "${__BREWUP_LOG_DIR:-$HOME/Library/Logs/brewup}"/*.log 2>/dev/null | head -n1)
         jsonl_file="${log_file%.log}.jsonl"
@@ -1082,7 +1438,7 @@ __brewup_show_config() {
     print ""
     print "Active settings:"
     local key
-    for key in "${(@k)__BREWUP_CFG}"; do
+    for key in "${(@ko)__BREWUP_CFG}"; do
         printf "  %-20s = %s\n" "$key" "${__BREWUP_CFG[$key]}"
     done
     print ""
@@ -1095,7 +1451,7 @@ __brewup_show_config() {
 # ──────────────────────────────────────────────────────────────────────────────
 __brewup_help() {
     cat <<'HELP'
-brewup — Safe, flexible Homebrew maintenance for macOS
+brewup — Safe, flexible system software maintenance for macOS
 
 USAGE
     brewup [subcommand] [flags]
@@ -1109,12 +1465,20 @@ SUBCOMMANDS
     summary       Show path to last log + recent entries
     report        Generate a formatted report (md|text|json)
     config        Show current configuration
-    version       Show version
+    rollback      Rollback a package to previous version
 
 FLAGS
   Package Selection
     --formula-only          Only upgrade formulae
     --cask-only             Only upgrade casks
+    --brew-only             Only Homebrew (skip npm/pip/gem/mas)
+    --npm, --with-npm       Include npm global packages
+    --pip, --with-pip       Include pip/pipx packages
+    --gem, --with-gem       Include gem packages
+    --mas, --with-mas       Include Mac App Store apps
+    --all, -a               Include all package managers
+
+  Homebrew Options
     --no-greedy             Don't use --greedy for cask upgrades
     --skip-auto-update      Skip casks with auto_updates: true
     --upgrade-pinned        Temporarily unpin → upgrade → re-pin
@@ -1128,6 +1492,8 @@ FLAGS
     --interactive, -i       Select packages interactively (requires fzf)
     --force-update          Force 'brew update' (normally implicit)
     --no-lock               Skip concurrent execution lock
+    --no-parallel           Disable parallel operations
+    --no-health-check       Skip pre-flight health checks
 
   Output
     --json                  Emit JSONL event log to stdout
@@ -1143,8 +1509,8 @@ FLAGS
 
   Other
     --yes, -y               Don't prompt for confirmation
+    --rollback=<pkg>        Rollback a specific package
     -h, --help              Show this help
-    --version               Show version
 
 CONFIGURATION
     Settings are loaded in order (highest precedence first):
@@ -1155,23 +1521,23 @@ CONFIGURATION
     Environment variables:
       BREWUP_THEME, BREWUP_LOG_DIR, BREWUP_LOG_RETENTION,
       BREWUP_NO_GREEDY, BREWUP_SKIP_AUTO_UPDATE, BREWUP_BATCH,
-      BREWUP_VERBOSE, BREWUP_QUIET, BREWUP_NO_COLOR, BREWUP_YES
+      BREWUP_VERBOSE, BREWUP_QUIET, BREWUP_NO_COLOR, BREWUP_YES,
+      BREWUP_NPM, BREWUP_PIP, BREWUP_GEM, BREWUP_MAS, BREWUP_ALL
 
 EXAMPLES
     brewup                      # Full maintenance run
     brewup plan                 # Preview what would be upgraded
-    brewup --dry-run            # Same as 'plan'
+    brewup --all                # Include all package managers
     brewup --formula-only       # Only upgrade formulae
     brewup --batch -y           # Fast batch upgrade, no prompt
     brewup -i                   # Interactive package selection
-    brewup report --report=md   # Generate markdown report
+    brewup --rollback=node      # Rollback node to previous version
 
 FILES
     ~/.config/brewup/config     Configuration file
     ~/Library/Logs/brewup/      Log files (macOS default)
     ~/.local/state/brewup/      Log files (XDG fallback)
 
-For more information: https://github.com/your-username/brewup
 HELP
 }
 
@@ -1185,6 +1551,9 @@ brewup() {
     # Load zsh modules
     zmodload zsh/datetime 2>/dev/null || true
     zmodload zsh/system 2>/dev/null || true
+
+    # Reset state
+    __BREWUP_ERRORS=()
 
     # Record start time
     __BREWUP_START_TIME="${EPOCHSECONDS:-$(date +%s)}"
@@ -1215,21 +1584,14 @@ brewup() {
 
     # Log session info
     (( ! __BREWUP_CFG[quiet] )) && {
-        __brewup_info "Log:    $__BREWUP_LOG_FILE"
-        __brewup_info "Events: $__BREWUP_JSONL"
+        __brewup_info "Log: $__BREWUP_LOG_FILE"
     }
 
-    # Pre-flight checks
-    __brewup_check_quarantine
-    __brewup_check_disk_space
+    # Pre-flight health checks
+    __brewup_health_check
 
     # Dispatch subcommand
     case "${__BREWUP_CFG[subcmd]}" in
-        version)
-            print "brewup $__BREWUP_VERSION"
-            __brewup_release_lock
-            return 0
-            ;;
         config)
             __brewup_show_config
             __brewup_release_lock
@@ -1257,6 +1619,11 @@ brewup() {
             __brewup_release_lock
             return 0
             ;;
+        rollback)
+            __brewup_rollback
+            __brewup_release_lock
+            return 0
+            ;;
         plan|upgrade|run)
             # Continue to main flow
             ;;
@@ -1265,7 +1632,7 @@ brewup() {
     # Main upgrade flow
     # -----------------
 
-    # Step 1: Update (unless 'upgrade' subcommand or implicit in brew upgrade)
+    # Step 1: Update (unless 'upgrade' subcommand or implicit)
     if [[ "${__BREWUP_CFG[subcmd]}" != "upgrade" ]] && (( __BREWUP_CFG[force_update] )); then
         __brewup_sect "Update Package Database"
         __brewup_retry 3 __brewup_run brew update || __brewup_warn "brew update reported issues"
@@ -1317,6 +1684,10 @@ brewup() {
 
     __brewup_upgrade_formulae
     __brewup_upgrade_casks
+    __brewup_upgrade_npm
+    __brewup_upgrade_pip
+    __brewup_upgrade_gem
+    __brewup_upgrade_mas
 
     # Step 8: Post-upgrade tasks
     if (( ! __BREWUP_CFG[dry_run] )); then
